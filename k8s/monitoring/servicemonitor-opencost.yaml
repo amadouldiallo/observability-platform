@@ -1,0 +1,27 @@
+# =============================================================================
+# ServiceMonitor — branche OpenCost (Projet 2) sur le nouveau Prometheus
+# =============================================================================
+# 🎯 Le concept
+# Remplace l'`extraScrapeConfigs` manuel utilisé au Projet 2 (Étape 8) —
+# maintenant que l'Operator tourne, une cible de scrape se déclare comme un
+# objet Kubernetes ordinaire, au bon endroit (ici, à côté de ce qu'il
+# surveille), plutôt que dans la config centrale d'un Prometheus qu'il
+# faudrait éditer à la main à chaque nouvelle cible.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: opencost
+  namespace: opencost
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opencost
+      app.kubernetes.io/instance: opencost
+  namespaceSelector:
+    matchNames: ["opencost"]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

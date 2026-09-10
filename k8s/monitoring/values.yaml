@@ -1,0 +1,126 @@
+# =============================================================================
+# kube-prometheus-stack — Prometheus Operator, remplace le Prometheus "nu"
+# =============================================================================
+#
+# 🎯 Le concept
+# Le Projet 2 (Étape 8, FinOps) fait déjà tourner un Prometheus — mais un
+# chart "nu" (`prometheus-community/prometheus`), configuré à la main via
+# `extraScrapeConfigs`. Le Prometheus Operator introduit un niveau
+# d'indirection : au lieu d'éditer la config Prometheus directement, on
+# crée des objets Kubernetes (`ServiceMonitor`, `PodMonitor`) que
+# l'Operator traduit lui-même en config — n'importe quelle équipe peut
+# ajouter SA cible de scrape sans jamais toucher au Prometheus central.
+#
+# ❓ Pourquoi migrer plutôt que faire tourner les deux en parallèle
+# Deux Prometheus sur le même cluster scrapant en partie les mêmes cibles
+# (OpenCost) gaspillerait des ressources et créerait une ambiguïté :
+# lequel interroge Grafana ? Ce values.yaml REMPLACE entièrement l'ancien
+# release `prometheus` (désinstallé avant ce `helm install`, voir README) —
+# une seule source de vérité pour les métriques du cluster.
+#
+# ⚠️ grafana.enabled: false — ce chart embarque SON PROPRE Grafana par
+# défaut. On garde le Grafana déjà en place (namespace `grafana`, Projet 2)
+# qui a déjà ses dashboards/alertes/datasource provisionnés par ConfigMap
+# (voir k8s/finops/ du Projet 2) — en installer un second créerait deux
+# Grafana avec deux jeux de dashboards, source de confusion pour un lab à
+# un seul opérateur.
+grafana:
+  enabled: false
+
+# GKE est un control plane MANAGÉ par Google : ces composants ne sont
+# jamais exposés au cluster (aucun Service à scraper) — les laisser
+# activés remplirait la page "Targets" de Prometheus de cibles
+# perpétuellement "down", sans qu'il y ait le moindre problème réel.
+# coreDns : même famille de piège, découvert au premier `helm install` —
+# le CoreDNS managé par GKE n'expose pas non plus son port 9153.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+coreDns:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # false : sans ça, l'Operator ignore tout ServiceMonitor qui ne porte
+    # pas le label de release de CE chart — impossible, alors, de scraper
+    # OpenCost (Projet 2) ou le backend applicatif (task-tracker,
+    # namespace différent) sans les recréer sous ce label précis. Une
+    # sélection ouverte (n'importe quel ServiceMonitor, n'importe quel
+    # namespace — `serviceMonitorNamespaceSelector: {}` est déjà le défaut
+    # du chart) correspond à l'esprit "brancher un capteur sans câblage
+    # manuel" du guide.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    # Stockage éphémère (emptyDir, défaut du chart si non précisé) assumé
+    # ici : Prometheus lui-même n'est pas la source de vérité long terme de
+    # ce projet (Loki/Tempo, eux, écrivent sur GCS — voir terraform/). Une
+    # rétention courte borne la mémoire/le disque consommés par un
+    # processus qui redémarre de toute façon sans historique en cas de
+    # remplacement de node (même limite déjà vécue avec Vault au Projet 2).
+    retention: 6h
+
+    # ⚠️ Piège rencontré pour de vrai au premier `helm install` : avec
+    # `cpu: 200m` en requête, le pod restait `Pending`
+    # ("0/4 nodes are available: 4 Insufficient cpu") — les 4 nodes
+    # e2-medium du cluster (Projet 2) tournaient déjà à 79-97% de leur CPU
+    # ALLOUABLE (Argo CD, Vault, cert-manager, External Secrets, OpenCost,
+    # Grafana, ingress-nginx, task-tracker...), sans la moindre marge de
+    # 200m d'un coup sur un seul node. La mémoire, elle, avait largement de
+    # la marge (41-62% utilisée) — un déséquilibre CPU/mémoire typique
+    # d'un cluster qui accumule des petits composants de plateforme.
+    # Réflexe à éviter ici (déjà vécu, voir modules/gke du Projet 2) :
+    # remonter `total_max_node_count` par réflexe. Solution retenue :
+    # réduire la REQUÊTE CPU (100m suffit très largement à la charge
+    # réelle d'un Prometheus de lab), la LIMITE reste à 500m pour absorber
+    # un pic de scrape sans être tuée par un throttling excessif.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi

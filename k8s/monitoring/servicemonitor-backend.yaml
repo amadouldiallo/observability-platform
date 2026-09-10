@@ -1,0 +1,35 @@
+# =============================================================================
+# ServiceMonitor — backend applicatif (task-tracker, Projet 2)
+# =============================================================================
+# 🎯 Le concept
+# Branche automatiquement le endpoint /metrics ajouté au backend (voir
+# apps/backend/app/main.py du dépôt gitops-platform — instrumentation
+# `prometheus-fastapi-instrumentator`, PAS un fichier de ce dépôt-ci : ce
+# ServiceMonitor décrit QUOI scraper côté plateforme, le code applicatif
+# qui EXPOSE la métrique reste dans le dépôt qui possède l'application).
+#
+# ⚠️ Piège anticipé : la NetworkPolicy `backend-allow-from-frontend` du
+# Projet 2 (dépôt gitops-platform, k8s/namespace/05-networkpolicy.yaml)
+# n'autorise QUE les pods labellisés "frontend" et le namespace
+# ingress-nginx — Prometheus, dans le namespace `monitoring`, en serait
+# bloqué sans une règle supplémentaire ajoutée À CE fichier-là (résolu
+# directement dans le dépôt Projet 2, qui possède cette ressource — pas
+# dupliqué ici).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: task-tracker-backend
+  namespace: task-tracker
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+      app.kubernetes.io/instance: task-tracker
+  namespaceSelector:
+    matchNames: ["task-tracker"]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
