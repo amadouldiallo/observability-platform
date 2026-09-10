@@ -1,0 +1,8 @@
+# Copie ce fichier en backend.hcl puis remplis avec ton propre bucket.
+# backend.hcl (le vrai) est ignoré par Git.
+#
+# Utilisation : terraform init -backend-config=backend.hcl
+# (le bucket doit déjà exister — c'est celui déjà utilisé par les Projets 1/2)
+
+bucket = "TON-PROJET-tfstate"
+prefix = "observability-platform/state"

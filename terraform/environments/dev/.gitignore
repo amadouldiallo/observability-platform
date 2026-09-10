@@ -1,0 +1,12 @@
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+crash.*.log
+
+terraform.tfvars
+*.auto.tfvars
+backend.hcl
+
+# NE PAS ignorer .terraform.lock.hcl : versions de provider figées,
+# nécessaires à la reproductibilité — doit être commité.

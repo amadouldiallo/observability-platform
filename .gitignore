@@ -1,0 +1,14 @@
+# macOS / éditeurs
+.DS_Store
+.vscode/
+*.swp
+
+# Terraform (voir terraform/environments/dev/.gitignore pour le détail)
+**/.terraform/
+**/*.tfstate*
+**/terraform.tfvars
+**/backend.hcl
+**/crash.log
+
+# Rendus temporaires de validation de diagrammes (mermaid-cli)
+*.svg.tmp

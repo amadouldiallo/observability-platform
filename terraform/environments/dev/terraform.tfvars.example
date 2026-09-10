@@ -1,0 +1,13 @@
+# Copie ce fichier en terraform.tfvars puis remplis les valeurs réelles.
+# N'oublie pas non plus backend.hcl (voir backend.hcl.example).
+
+# ID du projet GCP hébergeant déjà le cluster gitops-platform (Projet 2)
+project_id = "mon-projet-12345"
+
+# --- FinOps -------------------------------------------------------------
+environment = "dev"
+cost_center = "lab-perso"
+# extra_labels = { team = "platform" }
+
+# loki_retention_days  = 14
+# tempo_retention_days = 7
