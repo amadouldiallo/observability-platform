@@ -81,6 +81,33 @@ resource "google_storage_bucket_iam_member" "object_admin" {
   member = "serviceAccount:${google_service_account.workload_identity[each.key].email}"
 }
 
+# ⚠️ Piège rencontré pour de vrai en démarrant Tempo (pas Loki, qui se
+# contente d'`objectAdmin`) : `roles/storage.objectAdmin` couvre les
+# opérations sur les OBJETS (lire/écrire/lister des fichiers), mais PAS
+# `storage.buckets.get` — Tempo appelle cette permission AU DÉMARRAGE pour
+# vérifier les attributs du bucket, et échouait en CrashLoopBackOff avec
+# une erreur 403 explicite ("does not have storage.buckets.get access").
+# `roles/storage.legacyBucketReader` ajoute précisément cette permission
+# manquante, toujours scopée au bucket — pas la voie de facilité
+# `roles/storage.admin` (qui ajouterait aussi le droit de supprimer le
+# bucket lui-même, inutile ici). N'est demandé QUE par les buckets qui en
+# ont réellement besoin (`extra_roles`), pas appliqué par défaut aux deux.
+locals {
+  extra_roles_flat = flatten([
+    for key, b in var.buckets : [
+      for role in b.extra_roles : { pair_key = "${key}/${role}", bucket_key = key, role = role }
+    ]
+  ])
+}
+
+resource "google_storage_bucket_iam_member" "extra_roles" {
+  for_each = { for pair in local.extra_roles_flat : pair.pair_key => pair }
+
+  bucket = google_storage_bucket.buckets[each.value.bucket_key].name
+  role   = each.value.role
+  member = "serviceAccount:${google_service_account.workload_identity[each.value.bucket_key].email}"
+}
+
 resource "google_service_account_iam_member" "workload_identity_binding" {
   for_each = var.buckets
 

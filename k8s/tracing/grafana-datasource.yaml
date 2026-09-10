@@ -1,0 +1,31 @@
+# =============================================================================
+# Datasource Grafana — Tempo, même mécanisme que Loki et Prometheus
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-tempo
+  namespace: grafana
+  labels:
+    grafana_datasource: "1"
+data:
+  tempo.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        access: proxy
+        url: http://tempo.tracing.svc.cluster.local:3200
+        jsonData:
+          # Permet, depuis une trace ouverte dans Grafana, de sauter
+          # directement vers les logs Loki du même pod/namespace au même
+          # instant — la navigation "d'un pic de latence vers la trace
+          # puis les logs" que le guide (Étape 2) anticipait déjà.
+          tracesToLogsV2:
+            datasourceUid: loki
+            filterByTraceID: false
+            filterBySpanID: false
+            tags:
+              - key: service.name
+                value: app

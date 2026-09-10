@@ -17,6 +17,11 @@ variable "buckets" {
     k8s_namespace       = string
     k8s_service_account = string
     retention_days      = number
+    # Rôles IAM SUPPLÉMENTAIRES, au-delà de storage.objectAdmin (déjà
+    # accordé à tous) — vide par défaut, rempli uniquement pour un
+    # consommateur qui en a un besoin démontré (voir main.tf : Tempo a
+    # besoin de storage.legacyBucketReader, pas Loki).
+    extra_roles = optional(list(string), [])
   }))
 }
 

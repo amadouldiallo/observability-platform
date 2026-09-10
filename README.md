@@ -33,7 +33,7 @@ Mêmes symboles que les Projets 1 et 2 en tête de bloc de commentaire :
 | — Infrastructure (Terraform) | `terraform/` | ✅ **appliquée pour de vrai** — buckets GCS + Workload Identity actifs sur GCP, voir §Infrastructure |
 | 1 — Métriques (Prometheus) | `k8s/monitoring/` | ✅ **déployé et testé sur le vrai cluster** — voir §Métriques |
 | 2 — Logs (Loki) | `k8s/loki/` | ✅ **déployé et testé sur le vrai cluster** — voir §Logs |
-| 3 — Traces (OpenTelemetry + Tempo) | `k8s/tracing/` | ⬜ à faire |
+| 3 — Traces (OpenTelemetry + Tempo) | `k8s/tracing/` | ✅ **déployé et testé sur le vrai cluster** — voir §Traces |
 | 4 — Golden Signals | `k8s/dashboards/` | ⬜ à faire |
 | 5 — SLI | `docs/slo.md` | ⬜ à faire |
 | 6 — SLO | `docs/slo.md` | ⬜ à faire |
@@ -236,9 +236,86 @@ kubectl apply -f k8s/loki/grafana-datasource.yaml
 kubectl rollout restart deployment/grafana -n grafana
 ```
 
+## Traces (OpenTelemetry + Tempo)
+
+`k8s/tracing/` déploie Tempo (mode single-binary, chart `grafana/tempo` —
+PAS `tempo-distributed`), stockage GCS (`devops-498817-tempo-traces`), et
+le backend (dépôt gitops-platform) exporte ses traces directement vers le
+récepteur OTLP de Tempo — pas de Collector séparé, un composant de moins
+sur un cluster déjà à court de CPU (voir Étapes 1 et 2).
+
+```mermaid
+flowchart TD
+    subgraph app["namespace task-tracker"]
+        BE["backend<br/>FastAPIInstrumentor + PsycopgInstrumentor"]
+    end
+    subgraph ns["namespace tracing"]
+        TEMPO["Tempo<br/>(single-binary)"]
+    end
+    BE -->|OTLP gRPC :4317| TEMPO
+    TEMPO -->|blocs de traces| GCS["🪣 devops-498817-tempo-traces"]
+    TEMPO -->|datasource<br/>uid: tempo| GRAF["Grafana existant<br/>(Projets 1/2)"]
+    GRAF -.->|tracesToLogsV2| LOKI["datasource Loki<br/>(Étape 2)"]
+
+    style TEMPO fill:#8E44AD,color:#fff
+    style GCS fill:#4285F4,color:#fff
+```
+
+❓ **Pourquoi le backend exporte directement vers Tempo, sans OTel
+Collector** : pour un lab où le backend est la SEULE source de traces, un
+Collector n'ajouterait qu'un composant de plus à faire tourner (buffering,
+retraitement) sans consommateur du bénéfice qu'il apporte — Tempo expose
+déjà nativement les récepteurs OTLP gRPC/HTTP.
+
+🔭 **Scope volontairement limité** : la trace couvre backend → PostgreSQL,
+pas frontend → backend — le frontend est un simple proxy nginx statique,
+l'instrumenter aurait demandé un module nginx OTel tiers hors scope pour
+ce lab (le guide vise "visualiser le parcours", pas une couverture à 100%).
+
+**Bugs réels rencontrés en testant sur le cluster :**
+
+1. **`tempo-0` en `CrashLoopBackOff`** dès le premier démarrage : `Error
+   403: tempo-storage@... does not have storage.buckets.get access`.
+   `roles/storage.objectAdmin` (déjà accordé, comme pour Loki) couvre les
+   opérations sur les OBJETS mais PAS `storage.buckets.get`, que Tempo
+   appelle AU DÉMARRAGE pour vérifier les attributs du bucket — un besoin
+   que Loki n'a, lui, jamais manifesté. Fixé en ajoutant
+   `roles/storage.legacyBucketReader` (mécanisme `extra_roles`, module
+   Terraform généralisé pour l'occasion — voir
+   `terraform/modules/storage/main.tf`).
+2. **La moitié des traces dans Tempo ne contenaient qu'un span `SELECT`
+   isolé**, sans le span HTTP parent attendu. Root-caused côté dépôt
+   gitops-platform : `/readyz` (exclu du traçage HTTP) déclenchait quand
+   même un span `PsycopgInstrumentor` pour son `SELECT 1` toutes les 5s
+   (cadence de la sonde readiness), sans contexte parent — une trace
+   orpheline par appel. Fixé avec `suppress_instrumentation()` autour de
+   cet appel précis (voir le commit correspondant dans gitops-platform).
+3. **Datasource Grafana Tempo en timeout** (`dial tcp ... i/o timeout`) :
+   la `NetworkPolicy` initiale n'autorisait que `task-tracker` (écriture
+   OTLP, port 4317) — Grafana (namespace `grafana`) interroge Tempo sur un
+   port DIFFÉRENT (3200, l'API de query), depuis un namespace différent.
+   Même famille de piège que `backend-allow-from-frontend` au Projet 2
+   (le bon expéditeur, le mauvais port) — fixé en ajoutant une seconde
+   règle d'ingress dédiée.
+
+**Vérifié réellement, pas juste déployé :** une trace `GET /api/tasks`
+récupérée via l'API Tempo (`/api/traces/<id>`) montre le span racine
+`GET /api/tasks` (`SPAN_KIND_SERVER`) avec un span enfant `SELECT`
+(`SPAN_KIND_CLIENT`, `parentSpanId` = l'ID du span HTTP) — le chaînage
+HTTP → SQL fonctionne, pas seulement "des spans existent quelque part".
+
+```bash
+helm install tempo grafana/tempo -n tracing \
+  -f k8s/tracing/values.yaml --version 1.24.4 --wait
+
+kubectl apply -f k8s/tracing/networkpolicy.yaml
+kubectl apply -f k8s/tracing/grafana-datasource.yaml
+kubectl rollout restart deployment/grafana -n grafana
+```
+
 ---
 
-*Les sections suivantes (§Traces, §Golden Signals, §SLI/SLO, §Alerting,
-§Simulation d'incident, §Runbooks) seront ajoutées au fil de l'avancement
-réel, chacune testée sur le cluster avant d'être documentée — même
-discipline que les Projets 1 et 2.*
+*Les sections suivantes (§Golden Signals, §SLI/SLO, §Alerting, §Simulation
+d'incident, §Runbooks) seront ajoutées au fil de l'avancement réel, chacune
+testée sur le cluster avant d'être documentée — même discipline que les
+Projets 1 et 2.*

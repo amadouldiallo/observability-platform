@@ -1,0 +1,41 @@
+# =============================================================================
+# NetworkPolicy — Tempo n'accepte du trafic QUE de qui en a besoin
+# =============================================================================
+# 🎯 Le concept
+# Même logique de liste blanche que le socle de sécurité du Projet 2
+# (k8s/namespace/05-networkpolicy.yaml) : dès qu'une NetworkPolicy
+# sélectionne le pod Tempo pour l'ingress, seul le trafic explicitement
+# autorisé peut l'atteindre. Rien ne justifie qu'un pod d'un namespace
+# tiers puisse pousser des traces arbitraires vers ce Tempo.
+#
+# ⚠️ Piège rencontré pour de vrai : la version initiale n'autorisait que
+# task-tracker (écriture OTLP) — Grafana (datasource Tempo) restait bloqué
+# en timeout sur le port de QUERY (3200), un symptôme quasi identique à
+# celui déjà vu pour backend-allow-from-frontend au Projet 2 (le bon
+# expéditeur, mais le mauvais PORT d'usage). Deux usages distincts de
+# Tempo, deux namespaces distincts, deux règles.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tempo-allow-ingress
+  namespace: tracing
+spec:
+  podSelector: {} # tous les pods de ce namespace (juste Tempo aujourd'hui)
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: task-tracker
+      ports:
+        - protocol: TCP
+          port: 4317 # OTLP gRPC — celui utilisé par l'instrumentation du backend
+        - protocol: TCP
+          port: 4318 # OTLP HTTP — pas utilisé aujourd'hui, autorisé par cohérence
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: grafana
+      ports:
+        - protocol: TCP
+          port: 3200 # API de query HTTP — utilisée par le datasource Grafana

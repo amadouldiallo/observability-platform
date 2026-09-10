@@ -1,0 +1,53 @@
+# =============================================================================
+# Tempo — traces distribuées, stockage GCS (même principe que Loki)
+# =============================================================================
+#
+# 🎯 Le concept
+# Ce chart (`grafana/tempo`, PAS `tempo-distributed`) déploie Tempo en mode
+# "Single Binary" — un seul pod fait tourner tous les rôles internes
+# (distributor, ingester, compactor, querier), exactement le même choix
+# que pour Loki à l'Étape 2, pour la même raison : le volume de traces
+# d'un lab ne justifie aucune architecture distribuée.
+#
+# ❓ Pourquoi le WAL reste local (pas de PVC, `persistence.enabled: false`)
+# Contrairement au bucket GCS (stockage long terme des traces déjà
+# écrites), le WAL (write-ahead-log) ne contient que quelques secondes de
+# spans en transit avant leur premier flush — le perdre au redémarrage du
+# pod ferait perdre, au pire, les toutes dernières traces en cours
+# d'écriture, pas l'historique. Un compromis assumé pour un lab à faible
+# enjeu, différent du choix fait pour Loki (WAL sur PVC) car les
+# conséquences d'une perte sont plus limitées ici.
+tempo:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+
+  storage:
+    trace:
+      backend: gcs
+      gcs:
+        bucket_name: devops-498817-tempo-traces
+      wal:
+        path: /var/tempo/wal
+
+  # Les récepteurs OTLP (gRPC :4317, HTTP :4318) sont déjà activés par
+  # défaut dans ce chart — c'est ce que l'instrumentation OpenTelemetry du
+  # backend (dépôt gitops-platform) cible directement, SANS passer par un
+  # Collector séparé : un composant de moins à faire tourner sur un
+  # cluster déjà à court de CPU (voir les leçons des Étapes 1 et 2), pour
+  # un lab où le backend est la SEULE source de traces.
+
+# Workload Identity — voir terraform/modules/storage : ServiceAccount K8s
+# nommé "tempo" dans le namespace "tracing", exactement ce qu'attend le
+# binding IAM (vérifié via `kubectl get sa -n tracing`, pas supposé).
+serviceAccount:
+  name: tempo
+  annotations:
+    iam.gke.io/gcp-service-account: tempo-storage@devops-498817.iam.gserviceaccount.com
+
+serviceMonitor:
+  enabled: true

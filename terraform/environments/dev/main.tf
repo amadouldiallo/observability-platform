@@ -38,6 +38,11 @@ module "storage" {
       k8s_namespace       = "tracing"
       k8s_service_account = "tempo"
       retention_days      = var.tempo_retention_days
+      # ⚠️ Piège rencontré pour de vrai : Tempo (contrairement à Loki)
+      # appelle storage.buckets.get AU DÉMARRAGE pour vérifier les
+      # attributs du bucket — sans ce rôle, le pod tombait en
+      # CrashLoopBackOff avec un 403 explicite. Voir modules/storage/main.tf.
+      extra_roles = ["roles/storage.legacyBucketReader"]
     }
   }
 
