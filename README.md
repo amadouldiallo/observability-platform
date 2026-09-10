@@ -37,7 +37,7 @@ Mêmes symboles que les Projets 1 et 2 en tête de bloc de commentaire :
 | 4 — Golden Signals | `k8s/dashboards/` | ✅ **déployé et testé sur le vrai cluster** — voir §Golden Signals |
 | 5 — SLI | `docs/slo.md` | ✅ **3 SLI définis et vérifiés contre de vraies données** — voir §SLI |
 | 6 — SLO | `docs/slo.md` | ✅ **objectifs + error budget définis, vérifiés sur GKE** — voir §SLO |
-| 7 — Alerting | `k8s/alerting/` | ⬜ à faire |
+| 7 — Alerting | `k8s/alerting/` | ✅ **déployé et testé sur le vrai cluster** — voir §Alerting |
 | 8 — Simulation d'incident | `docs/incident-drill.md` | ⬜ à faire |
 | 9 — Runbooks | `docs/runbooks/` | ⬜ à faire |
 
@@ -392,8 +392,45 @@ utilisée sur ce cluster (fenêtre 1h, adaptée à la rétention réelle) — un
 vrai SLO à 30 jours demanderait un stockage long terme (Thanos, Mimir),
 délibérément hors scope ici.
 
+## Alerting
+
+`k8s/alerting/prometheusrules.yaml` — 4 règles d'alerte, chacune avec un
+lien `runbook_url` (Étape 9, pas encore écrit — référence en avance, dans
+l'ordre du guide) :
+
+| Alerte | Condition | Sévérité |
+|---|---|---|
+| `HighErrorRate` | taux d'erreur 5xx > 1% pendant 5 min | warning |
+| `HighLatency` | p95 > 500ms pendant 5 min | warning |
+| `TaskTrackerPodCrashLooping` | `CrashLoopBackOff` sur un pod task-tracker pendant 5 min | critical |
+| `SLOViolation` | > 80% de l'error budget consommé (fenêtre 1h, voir Étape 6) | critical |
+
+❓ **Pourquoi pas de règle `PodCrashLooping` générique** : `kube-prometheus-stack`
+(Étape 1, `defaultRules.enabled: true`) fournit déjà `KubePodCrashLooping`,
+une règle standard cluster-wide — vérifié directement (`kubectl get
+prometheusrule kube-prometheus-stack-kubernetes-apps`). La dupliquer
+aurait fait sonner deux alertes pour le même événement. `TaskTrackerPodCrashLooping`
+réutilise la même formule éprouvée, mais scopée au namespace applicatif,
+avec un runbook spécifique plutôt que générique.
+
+⚠️ **Aucun canal de notification configuré** (receiver `"null"` par
+défaut d'Alertmanager) — même choix assumé que l'alerte FinOps du
+Projet 2 : ces règles passent en `Firing`, visibles dans l'UI, sans
+notifier personne activement.
+
+**Vérifié réellement, pas juste déployé** : les 4 règles apparaissent
+dans `/api/v1/rules` avec `health: "ok"` et `state: "inactive"` — chaque
+expression PromQL s'évalue sans erreur, et n'est PAS en train de sonner
+(cohérent : aucune erreur 5xx, latence p95 à 95ms, aucun crash loop —
+Étapes 4/5/6). La première vraie transition `inactive` → `firing` viendra
+de la simulation d'incident, Étape 8.
+
+```bash
+kubectl apply -f k8s/alerting/prometheusrules.yaml
+```
+
 ---
 
-*Les sections suivantes (§Alerting, §Simulation d'incident, §Runbooks)
-seront ajoutées au fil de l'avancement réel, chacune testée sur le cluster
-avant d'être documentée — même discipline que les Projets 1 et 2.*
+*Les sections suivantes (§Simulation d'incident, §Runbooks) seront
+ajoutées au fil de l'avancement réel, chacune testée sur le cluster avant
+d'être documentée — même discipline que les Projets 1 et 2.*

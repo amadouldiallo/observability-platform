@@ -1,0 +1,98 @@
+# =============================================================================
+# Règles d'alerte — backend task-tracker
+# =============================================================================
+#
+# 🎯 Le concept
+# Un `PrometheusRule` est un objet Kubernetes que le Prometheus Operator
+# (Étape 1) traduit lui-même en règle d'alerte — même mécanisme que les
+# `ServiceMonitor` : déclarer l'intention en YAML, pas éditer une config
+# centrale à la main.
+#
+# 🧠 Analogie
+# Voir le guide : un détecteur de fumée bien calibré sonne pour un vrai
+# feu, pas à chaque toast grillé. `for:` est le délai de confirmation —
+# une bouffée de fumée d'un instant ne déclenche rien, une fumée qui
+# persiste plusieurs minutes, si.
+#
+# ❓ Pourquoi pas de règle "PodCrashLooping" générique ici
+# `kube-prometheus-stack` (Étape 1, `defaultRules.enabled: true`, jamais
+# désactivé) fournit DÉJÀ `KubePodCrashLooping`, une règle standard,
+# cluster-wide, mûre et déjà chargée dans Prometheus (vérifié via
+# `kubectl get prometheusrule kube-prometheus-stack-kubernetes-apps -o
+# yaml`) — la dupliquer aurait fait sonner deux alertes pour le même
+# événement. La version ci-dessous est volontairement SCOPÉE au namespace
+# task-tracker (le générique ne l'est pas) et porte un lien vers LE
+# runbook applicatif, pas générique.
+#
+# ⚠️ Alertmanager de ce cluster n'a AUCUN canal de notification configuré
+# (receiver "null" par défaut, kube-prometheus-stack) — même choix
+# assumé que l'alerte FinOps du Projet 2 : ces règles passent en
+# "Firing", visibles dans l'UI Alertmanager, mais ne notifient personne
+# activement. Configurer un contact point est un pas de plus, hors scope
+# pour un lab à un seul opérateur.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: task-tracker-backend-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: task-tracker-backend
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            100 * sum(rate(http_requests_total{namespace="task-tracker",handler!~"/metrics",status="5xx"}[5m]))
+            /
+            sum(rate(http_requests_total{namespace="task-tracker",handler!~"/metrics"}[5m]))
+            > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Taux d'erreur 5xx > 1% depuis plus de 5 minutes sur task-tracker-backend"
+            runbook_url: "https://github.com/amadouldiallo/observability-platform/blob/main/docs/runbooks/high-error-rate.md"
+
+        - alert: HighLatency
+          expr: |
+            histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace="task-tracker",handler!~"/metrics"}[5m])) by (le))
+            > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "p95 de latence > 500ms depuis plus de 5 minutes sur task-tracker-backend"
+            runbook_url: "https://github.com/amadouldiallo/observability-platform/blob/main/docs/runbooks/high-latency.md"
+
+        # Scopée task-tracker (voir ❓ plus haut) — même formule éprouvée que
+        # la règle standard KubePodCrashLooping de kube-prometheus-stack.
+        - alert: TaskTrackerPodCrashLooping
+          expr: |
+            max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", namespace="task-tracker"}[5m]) >= 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Un pod du namespace task-tracker redémarre en boucle (CrashLoopBackOff)"
+            runbook_url: "https://github.com/amadouldiallo/observability-platform/blob/main/docs/runbooks/pod-crashloop.md"
+
+        # Fenêtre 1h, pas 30j — voir docs/slo.md (Étape 6) pour l'explication
+        # complète : ce Prometheus a une rétention de 6h, une fenêtre plus
+        # longue calculerait silencieusement sur des données incomplètes.
+        - alert: SLOViolation
+          expr: |
+            (
+              1 - (
+                sum(rate(http_requests_total{namespace="task-tracker",handler!~"/metrics",status=~"2xx|3xx"}[1h]))
+                /
+                sum(rate(http_requests_total{namespace="task-tracker",handler!~"/metrics"}[1h]))
+              )
+            ) / (1 - 0.999) * 100
+            > 80
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Plus de 80% de l'error budget (SLO 99,9% de disponibilité) consommé sur la dernière heure"
+            runbook_url: "https://github.com/amadouldiallo/observability-platform/blob/main/docs/runbooks/slo-breach.md"
