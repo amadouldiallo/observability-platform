@@ -39,7 +39,7 @@ Mêmes symboles que les Projets 1 et 2 en tête de bloc de commentaire :
 | 6 — SLO | `docs/slo.md` | ✅ **objectifs + error budget définis, vérifiés sur GKE** — voir §SLO |
 | 7 — Alerting | `k8s/alerting/` | ✅ **déployé et testé sur le vrai cluster** — voir §Alerting |
 | 8 — Simulation d'incident | `docs/incident-drill.md` | ✅ **panne réelle provoquée et documentée sur GKE** — voir §Simulation d'incident |
-| 9 — Runbooks | `docs/runbooks/` | ⬜ à faire |
+| 9 — Runbooks | `docs/runbooks/` | ✅ **5 runbooks, ancrés dans l'incident réel de l'Étape 8** |
 
 ## Infrastructure (Terraform)
 
@@ -474,7 +474,52 @@ suffi non plus, la cible disparaît plutôt que de passer à 0) ajoutée et
 **MTTD observé** : ~4min56s (dominé par le `for: 2m` délibéré). **MTTR
 observé** : 24s (`scale` → pod `Ready`).
 
+## Runbooks
+
+[docs/runbooks/](docs/runbooks/) — 5 documents, un par alerte de
+l'Étape 7 : [high-error-rate.md](docs/runbooks/high-error-rate.md),
+[high-latency.md](docs/runbooks/high-latency.md),
+[pod-crashloop.md](docs/runbooks/pod-crashloop.md),
+[backend-down.md](docs/runbooks/backend-down.md),
+[slo-breach.md](docs/runbooks/slo-breach.md).
+
+❓ **Pourquoi `backend-down.md` plutôt que `node-not-ready.md`** (le nom
+suggéré par le guide) : ce projet n'a ni alerte ni incident réel autour
+d'un node `NotReady` — en écrire un runbook aurait été de la théorie.
+`BackendDown`, à l'inverse, est l'alerte qu'on a RÉELLEMENT dû inventer
+en pleine panne provoquée (Étape 8) — son runbook est directement tiré de
+ce qui a été vécu (le piège `up{} == 0` qui ne marche pas, le rôle du
+`selfHeal` Argo CD, les délais mesurés), pas généré depuis un modèle.
+
+Chacun suit la même structure : symptômes observés, requêtes
+PromQL/kubectl de diagnostic immédiat, actions de remédiation par ordre
+de priorité, critère de résolution — écrits pour être suivis sous stress
+(commandes copier-coller), pas pour expliquer l'architecture.
+
 ---
 
-*La section §Runbooks sera ajoutée à l'Étape 9, testée sur le cluster
-avant d'être documentée — même discipline que les Projets 1 et 2.*
+## Guide terminé — et maintenant ?
+
+Les 9 étapes sont construites et testées sur le vrai cluster
+`gitops-platform` (Projet 2), pas seulement décrites. Récapitulatif des
+découvertes réelles qui ne figuraient dans aucun plan initial :
+
+- Un Prometheus qui remplace l'ancien sans doublon (Étape 1), une requête
+  CPU réduite plutôt qu'un cluster agrandi par réflexe.
+- Un chart Loki dont le raccourci "test schema" écrit silencieusement sur
+  le mauvais backend de stockage (Étape 2).
+- Un Tempo qui a besoin d'une permission GCS que Loki, lui, n'a jamais
+  demandée (Étape 3).
+- Un histogramme dont les bornes par défaut rendaient un SLI du guide
+  littéralement incalculable (Étape 5).
+- Une fenêtre PromQL de 30 jours qui "réussit" silencieusement sur 6h de
+  données réelles (Étape 6).
+- Une simulation d'incident qui a d'abord révélé les limites du GitOps
+  lui-même (`selfHeal` contre `kubectl scale`), puis un vrai trou de
+  couverture dans l'alerting (Étape 8) — corrigé et vérifié EN DIRECT,
+  panne encore active.
+
+Comme le suggère le guide original : le **Projet 4 (DevSecOps & Supply
+Chain Security)** s'appuierait sur cette même plateforme — SAST, scan de
+vulnérabilités (Trivy), SBOM (Syft/SPDX), signature d'images (Cosign),
+politiques d'admission (Kyverno) et détection runtime (Falco).
