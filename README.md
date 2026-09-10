@@ -35,7 +35,7 @@ Mêmes symboles que les Projets 1 et 2 en tête de bloc de commentaire :
 | 2 — Logs (Loki) | `k8s/loki/` | ✅ **déployé et testé sur le vrai cluster** — voir §Logs |
 | 3 — Traces (OpenTelemetry + Tempo) | `k8s/tracing/` | ✅ **déployé et testé sur le vrai cluster** — voir §Traces |
 | 4 — Golden Signals | `k8s/dashboards/` | ✅ **déployé et testé sur le vrai cluster** — voir §Golden Signals |
-| 5 — SLI | `docs/slo.md` | ⬜ à faire |
+| 5 — SLI | `docs/slo.md` | ✅ **3 SLI définis et vérifiés contre de vraies données** — voir §SLI |
 | 6 — SLO | `docs/slo.md` | ⬜ à faire |
 | 7 — Alerting | `k8s/alerting/` | ⬜ à faire |
 | 8 — Simulation d'incident | `docs/incident-drill.md` | ⬜ à faire |
@@ -357,9 +357,24 @@ Le dashboard s'est ensuite chargé et confirmé accessible via l'API Grafana
 kubectl apply -f k8s/dashboards/golden-signals-backend.yaml
 ```
 
+## SLI
+
+[docs/slo.md](docs/slo.md) définit 3 SLI PromQL pour le backend —
+disponibilité, taux d'erreur, latence sous 300ms — chacun vérifié
+directement contre Prometheus avec du trafic réel avant d'être documenté.
+
+⚠️ **Piège rencontré pour de vrai** : le SLI de latence ("% sous 300ms")
+était incalculable avec les bornes d'histogramme par défaut de
+`prometheus-fastapi-instrumentator` (`0.1, 0.5, 1` — aucune à 0.3
+exactement). Un histogramme Prometheus ne répond qu'aux seuils qui
+correspondent à une de ses bornes `le=...` — fixé en personnalisant les
+bornes du backend (`apps/backend/app/main.py`, dépôt gitops-platform) pour
+inclure `0.3`. Détail complet et requêtes vérifiées dans
+[docs/slo.md](docs/slo.md).
+
 ---
 
-*Les sections suivantes (§SLI/SLO, §Alerting, §Simulation d'incident,
+*Les sections suivantes (§SLO, §Alerting, §Simulation d'incident,
 §Runbooks) seront ajoutées au fil de l'avancement réel, chacune testée sur
 le cluster avant d'être documentée — même discipline que les Projets 1 et
 2.*
