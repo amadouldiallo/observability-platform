@@ -1,0 +1,150 @@
+# =============================================================================
+# Loki — logs centralisés, stockage GCS (pas de perte au remplacement de node)
+# =============================================================================
+#
+# 🎯 Le concept
+# `deploymentMode: SingleBinary` fait tourner TOUS les rôles internes de
+# Loki (distributor, ingester, querier, compactor...) dans un seul
+# processus/pod, plutôt que plusieurs composants séparés
+# (`SimpleScalable`/`Distributed`, pensés pour un très gros volume). Pour
+# un cluster de lab à un seul opérateur, le volume de logs ne justifie
+# aucunement la complexité opérationnelle d'un Loki distribué.
+#
+# ❓ Pourquoi `gateway.enabled: false`
+# Le gateway (nginx) sert à router différents chemins HTTP vers différents
+# composants — utile en mode distribué (lire/écrire sont deux composants
+# séparés), inutile en SingleBinary où UN SEUL pod répond déjà à tout sur
+# le port 3100. Un composant de moins à faire tourner, sans perte de
+# fonctionnalité ici.
+#
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false # single-tenant : pas de multi-tenancy à gérer pour un lab
+
+  commonConfig:
+    replication_factor: 1 # 1 seul pod (SingleBinary) : répliquer n'aurait pas de sens
+
+  # Les 3 GCS "buckets" logiques de Loki (chunks, ruler, admin — voir Étape 7
+  # du Projet 2 pour l'explication de admin/GEL, non utilisé ici) pointent
+  # tous vers LE MÊME bucket physique (terraform/modules/storage du Projet 3)
+  # — Loki les distingue par préfixe d'objet en interne, pas besoin de 3
+  # buckets GCS séparés pour un usage aussi modeste.
+  storage:
+    type: gcs
+    bucketNames:
+      chunks: devops-498817-loki-chunks
+      ruler: devops-498817-loki-chunks
+      admin: devops-498817-loki-chunks
+
+  # ⚠️ Piège rencontré pour de vrai : `useTestSchema: true` (le raccourci
+  # "playing around" documenté par le chart) résout `object_store` à
+  # `filesystem`, PAS à `gcs` — malgré `storage.type: gcs` déjà configuré
+  # ci-dessus. Résultat observé dans les logs de l'ingester : "failed to
+  # flush chunks: store put chunk: mkdir fake: read-only file system"
+  # (`fake` = l'org_id par défaut quand `auth_enabled: false`) — Loki
+  # tentait d'écrire les chunks EN LOCAL, sur un filesystem que le
+  # conteneur (`readOnlyRootFilesystem`) ne permet pas d'écrire hors du
+  # volume monté. Confirmé en dumpant la ConfigMap rendue
+  # (`kubectl get cm loki -o yaml`) : `schema_config.configs[0].object_store`
+  # y valait bien `filesystem`. Fixé en écrivant le schemaConfig à la main
+  # plutôt que via le raccourci — la doc du chart prévenait déjà qu'un
+  # "vrai" déploiement en a besoin, ce qui s'est avéré vrai plus tôt que
+  # prévu, dès le local GCS lui-même.
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: gcs
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  # ❓ Pourquoi réduire ces délais par défaut (30m idle / 2h max_chunk_age)
+  # Avec le volume d'un lab (quelques logs/seconde), un chunk n'atteint sa
+  # taille cible qu'après plusieurs dizaines de minutes voire des heures —
+  # AUCUNE donnée n'apparaît dans le bucket GCS avant ça, ce qui a
+  # concrètement rendu la vérification "les logs sont bien écrits sur
+  # GCS" impossible à observer en temps utile. Un flush plus fréquent
+  # (chunks plus petits, donc plus de requêtes GCS) est le bon compromis
+  # pour un lab à faible volume : le nombre de requêtes GCS reste
+  # négligeable en coût, la fraîcheur des données gagnée est réelle.
+  ingester:
+    chunk_idle_period: 1m
+    max_chunk_age: 5m
+    chunk_target_size: 262144 # 256Ki — largement atteignable rapidement à ce volume
+
+# Le chart garde des valeurs par défaut > 0 pour les composants du mode
+# SimpleScalable (write/read/backend) même quand deploymentMode est réglé
+# sur SingleBinary — un garde-fou du chart (`validate.yaml`) refuse
+# d'installer tant que ces trois-là ne sont pas explicitement à 0, pour
+# éviter de faire tourner les deux modes en même temps par erreur de
+# fusion de values.yaml.
+write:
+  replicas: 0
+read:
+  replicas: 0
+backend:
+  replicas: 0
+
+singleBinary:
+  replicas: 1
+  resources:
+    # ⚠️ Leçon retenue de l'Étape 1 (Prometheus) : requêtes CPU modestes
+    # dès le départ plutôt que découvrir un pod `Pending` après coup — ce
+    # cluster tourne déjà proche de sa capacité CPU allouable.
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+  persistence:
+    # Le disque local ne sert plus qu'au WAL (write-ahead-log) et au cache
+    # d'index — les chunks eux-mêmes partent sur GCS (voir storage
+    # ci-dessus) : 5Gi est largement suffisant, pas besoin des 10Gi par
+    # défaut du chart.
+    size: 5Gi
+
+# Workload Identity — voir terraform/modules/storage : ce ServiceAccount
+# Kubernetes doit s'appeler EXACTEMENT "loki" dans le namespace "loki",
+# c'est ce que le binding IAM attend (vérifié via `kubectl get sa -n loki`
+# après le premier `helm install`, pas supposé).
+serviceAccount:
+  name: loki
+  annotations:
+    iam.gke.io/gcp-service-account: loki-storage@devops-498817.iam.gserviceaccount.com
+
+gateway:
+  enabled: false
+
+# ⚠️ Piège rencontré pour de vrai au premier `helm install` : chacun de ces
+# deux caches memcached est activé PAR DÉFAUT et demande à lui seul 500m
+# CPU / 1Gi mémoire — les deux ensemble sont restés `Pending` ("4
+# Insufficient cpu, 4 Insufficient memory") sur un cluster déjà chargé
+# (voir Étape 1). Un cache de résultats de requête/chunks accélère des
+# requêtes RÉPÉTÉES sur un GROS volume de logs — aucune des deux
+# conditions n'est réunie pour ce lab. Désactivés plutôt que redimensionnés :
+# la fonctionnalité qu'ils accélèrent n'a pas d'utilité mesurable ici.
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+test:
+  enabled: false
+
+# loki-canary écrit puis relit en continu un log synthétique — une preuve
+# vivante, mesurable, que le pipeline complet (écriture -> stockage GCS ->
+# lecture) fonctionne réellement, pas seulement "les pods sont Running".
+lokiCanary:
+  enabled: true
+
+monitoring:
+  serviceMonitor:
+    # Branché sur le Prometheus Operator de l'Étape 1 — Loki expose ses
+    # propres métriques opérationnelles (débit d'ingestion, erreurs...),
+    # utiles pour un futur Golden Signals de la PLATEFORME elle-même, pas
+    # seulement de l'application.
+    enabled: true

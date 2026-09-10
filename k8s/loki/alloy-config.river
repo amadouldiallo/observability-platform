@@ -1,0 +1,60 @@
+// =============================================================================
+// Grafana Alloy — collecte des logs du namespace task-tracker vers Loki
+// =============================================================================
+//
+// 🎯 Le concept
+// Alloy tourne en DaemonSet (un pod par node, défaut du chart) et
+// interroge directement l'API Kubernetes pour streamer les logs des pods
+// ciblés (`loki.source.kubernetes`) — pas besoin de monter le système de
+// fichiers du node (`/var/log/pods`) comme le faisait Promtail.
+//
+// ❓ Pourquoi Alloy plutôt que Promtail (cité en premier dans le guide)
+// Promtail est officiellement déprécié par Grafana Labs ("no longer
+// receive updates or support" — vérifié sur le chart au moment d'écrire
+// ceci). Alloy est son remplaçant activement maintenu, désigné comme tel
+// par le guide lui-même ("ou Grafana Alloy").
+//
+// 🔭 Pour aller plus loin : ce discovery est volontairement scopé au
+// namespace task-tracker (cohérent avec le prompt du guide, "tous les
+// pods du namespace task-tracker") — l'étendre à tout le cluster ne
+// demande qu'à retirer le bloc `namespaces { names = [...] }` ci-dessous.
+
+discovery.kubernetes "task_tracker_pods" {
+	role = "pod"
+
+	namespaces {
+		names = ["task-tracker"]
+	}
+}
+
+discovery.relabel "task_tracker_pods" {
+	targets = discovery.kubernetes.task_tracker_pods.targets
+
+	rule {
+		source_labels = ["__meta_kubernetes_namespace"]
+		target_label  = "namespace"
+	}
+	rule {
+		source_labels = ["__meta_kubernetes_pod_name"]
+		target_label  = "pod"
+	}
+	rule {
+		source_labels = ["__meta_kubernetes_pod_container_name"]
+		target_label  = "container"
+	}
+	rule {
+		source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+		target_label  = "app"
+	}
+}
+
+loki.source.kubernetes "task_tracker_pods" {
+	targets    = discovery.relabel.task_tracker_pods.output
+	forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+	endpoint {
+		url = "http://loki.loki.svc.cluster.local:3100/loki/api/v1/push"
+	}
+}

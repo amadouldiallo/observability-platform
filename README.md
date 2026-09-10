@@ -32,7 +32,7 @@ Mêmes symboles que les Projets 1 et 2 en tête de bloc de commentaire :
 |---|---|---|
 | — Infrastructure (Terraform) | `terraform/` | ✅ **appliquée pour de vrai** — buckets GCS + Workload Identity actifs sur GCP, voir §Infrastructure |
 | 1 — Métriques (Prometheus) | `k8s/monitoring/` | ✅ **déployé et testé sur le vrai cluster** — voir §Métriques |
-| 2 — Logs (Loki) | `k8s/loki/` | ⬜ à faire |
+| 2 — Logs (Loki) | `k8s/loki/` | ✅ **déployé et testé sur le vrai cluster** — voir §Logs |
 | 3 — Traces (OpenTelemetry + Tempo) | `k8s/tracing/` | ⬜ à faire |
 | 4 — Golden Signals | `k8s/dashboards/` | ⬜ à faire |
 | 5 — SLI | `docs/slo.md` | ⬜ à faire |
@@ -164,9 +164,81 @@ kubectl apply -f k8s/monitoring/servicemonitor-backend.yaml
 l'ouverture de `backend-allow-from-frontend` au namespace `monitoring` —
 voir sa section [§Évolutions liées au Projet 3](https://github.com/amadouldiallo/gitops-platform#-évolutions-liées-au-projet-3).
 
+## Logs (Loki)
+
+`k8s/loki/` déploie Loki en mode `SingleBinary`, stockage GCS (le bucket
+`devops-498817-loki-chunks` provisionné à l'Étape 0), et Grafana Alloy
+pour collecter les logs réels du namespace `task-tracker`.
+
+```mermaid
+flowchart TD
+    subgraph ns["namespace loki"]
+        ALLOY["Alloy<br/>(Deployment, 1 réplica)"] -->|push /loki/api/v1/push| LOKI["Loki<br/>(SingleBinary)"]
+    end
+    K8SAPI["API Kubernetes<br/>(logs des pods, comme kubectl logs)"] -->|loki.source.kubernetes| ALLOY
+    LOKI -->|WAL local + chunks| GCS["🪣 devops-498817-loki-chunks<br/>(Workload Identity)"]
+    LOKI -->|datasource<br/>uid: loki| GRAF["Grafana existant<br/>(Projet 2)"]
+
+    style LOKI fill:#F5A623,color:#fff
+    style GCS fill:#4285F4,color:#fff
+```
+
+❓ **Pourquoi Alloy en `Deployment`, pas en `DaemonSet`** (le défaut du
+chart) : `loki.source.kubernetes` lit les logs via l'API Kubernetes — comme
+`kubectl logs -f`, pas via le système de fichiers local du node. Un seul
+pod peut donc streamer les logs de n'importe quel pod du cluster, peu
+importe le node — un DaemonSet n'a de sens que pour un agent qui lit des
+fichiers locaux (Promtail, aujourd'hui déprécié, en avait besoin).
+
+**Bugs réels rencontrés en testant sur le cluster :**
+
+1. **Les 2 caches memcached du chart (chunks-cache, results-cache) restaient
+   `Pending`** — activés par défaut, 500m CPU / 1Gi mémoire CHACUN, sans
+   utilité mesurable au volume de logs d'un lab. Désactivés.
+2. **Les pods Alloy (DaemonSet, config initiale) restaient `Pending` sur 3
+   nodes sur 4.** Réflexe testé : remonter `total_max_node_count` (4→5,
+   dépôt gitops-platform) pour donner de l'air au cluster-autoscaler —
+   **sans le moindre effet**, et `cluster-autoscaler-status` (namespace
+   kube-system) explique pourquoi : un pod de DaemonSet déjà créé est
+   épinglé, via `nodeAffinity`, au node EXISTANT que le contrôleur lui a
+   assigné à sa création — ajouter un 5ᵉ node ne libère AUCUNE capacité
+   sur les 4 nodes déjà pleins. Changement Terraform annulé, root cause
+   corrigée à la racine : `controller.type: deployment` (voir ci-dessus).
+3. **Aucun chunk n'apparaissait dans le bucket GCS**, même après plusieurs
+   minutes d'attente et une réduction de `chunk_idle_period`/`max_chunk_age`.
+   Les logs de l'ingester révélaient la vraie cause :
+   `failed to flush chunks: store put chunk: mkdir fake: read-only file
+   system` — `useTestSchema: true` (le raccourci du chart pour "tester
+   sans se prendre la tête") résolvait `object_store` à `filesystem`, PAS
+   à `gcs`, malgré `storage.type: gcs` déjà configuré par ailleurs.
+   Confirmé en dumpant la ConfigMap rendue (`kubectl get cm loki -o yaml`).
+   Fixé en écrivant `schemaConfig` explicitement plutôt que via le
+   raccourci — la doc du chart prévenait qu'un "vrai" déploiement en avait
+   besoin ; vrai plus tôt que prévu, dès le lab.
+
+**Vérifié réellement, pas juste déployé :**
+- `gsutil ls gs://devops-498817-loki-chunks/` montre de vrais objets
+  (`fake/<fingerprint>/...`) après la correction du schéma.
+- Une requête LogQL (`{namespace="task-tracker", app="backend"}`) sur du
+  trafic généré en direct (`curl .../api/tasks`) retourne les vraies
+  lignes de log de l'application (`INFO: ... "GET /readyz HTTP/1.1" 200`).
+- Datasource Grafana Loki : `{"status":"OK","message":"Data source
+  successfully connected."}` via l'API santé de Grafana.
+
+```bash
+helm install loki grafana/loki -n loki --create-namespace \
+  -f k8s/loki/values.yaml --version 7.3.0 --wait
+
+helm install alloy grafana/alloy -n loki \
+  -f k8s/loki/alloy-values.yaml --version 1.12.1 --wait
+
+kubectl apply -f k8s/loki/grafana-datasource.yaml
+kubectl rollout restart deployment/grafana -n grafana
+```
+
 ---
 
-*Les sections suivantes (§Logs, §Traces, §Golden Signals, §SLI/SLO,
-§Alerting, §Simulation d'incident, §Runbooks) seront ajoutées au fil de
-l'avancement réel, chacune testée sur le cluster avant d'être documentée —
-même discipline que les Projets 1 et 2.*
+*Les sections suivantes (§Traces, §Golden Signals, §SLI/SLO, §Alerting,
+§Simulation d'incident, §Runbooks) seront ajoutées au fil de l'avancement
+réel, chacune testée sur le cluster avant d'être documentée — même
+discipline que les Projets 1 et 2.*

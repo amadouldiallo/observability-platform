@@ -1,0 +1,88 @@
+# =============================================================================
+# Grafana Alloy — collecte des logs, en Deployment (PAS le DaemonSet par défaut)
+# =============================================================================
+# ⚠️ Piège rencontré pour de vrai : le DaemonSet par défaut du chart
+# (`controller.type: daemonset`) crée un pod par node, chacun ÉPINGLÉ (via
+# nodeAffinity) au node que le contrôleur lui assigne à SA création. Sur ce
+# cluster (déjà à 95-98% de CPU alloué sur ses 4 nodes, voir Étape 1), 3
+# des 4 pods restaient `Pending` — et contrairement à un Deployment
+# ordinaire, remonter le nombre MAX de nodes du cluster n'aide en RIEN : un
+# 5ᵉ node n'aurait libéré aucune capacité sur les 4 nodes déjà pleins
+# (`cluster-autoscaler-status`, namespace kube-system, confirmait
+# `scaleUp.status: NoActivity` — testé pour de vrai avant de comprendre
+# pourquoi, voir terraform/modules/gke/variables.tf du Projet 2 pour la
+# fausse piste explicitement documentée et annulée).
+#
+# ❓ Pourquoi un Deployment suffit ICI précisément
+# `loki.source.kubernetes` (voir alloy-config.river) lit les logs via
+# l'API Kubernetes — comme `kubectl logs -f`, PAS via le système de
+# fichiers local du node (`/var/log/pods`). Un DaemonSet n'a de sens QUE
+# pour un agent qui lit des fichiers locaux (c'était le cas de Promtail,
+# voir sa dépréciation plus haut) : ici, UN SEUL pod peut streamer les
+# logs de N'IMPORTE QUEL pod du cluster, peu importe sur quel node il
+# tourne. Remplacer le DaemonSet par un Deployment à 1 réplica n'est donc
+# pas un contournement — c'est le bon design pour ce mode de collecte
+# précis, qui a aussi l'avantage de ne demander qu'UN SEUL emplacement
+# libre sur le cluster plutôt que quatre.
+controller:
+  type: deployment
+  replicas: 1
+#
+# ⚠️ Le contenu ci-dessous DOIT rester identique à alloy-config.river (ce
+# chart ne supporte pas `Files.Get` depuis un fichier -f externe — contrairement
+# à un chart custom, un values.yaml passé en `-f` n'est jamais passé au
+# moteur de template Helm, juste chargé comme YAML brut). Les deux fichiers
+# existent séparément pour que le `.river` reste lisible/éditable seul,
+# lint-able par l'extension Alloy — mais toute modification doit être
+# répercutée manuellement ici.
+alloy:
+  configMap:
+    content: |
+      discovery.kubernetes "task_tracker_pods" {
+      	role = "pod"
+
+      	namespaces {
+      		names = ["task-tracker"]
+      	}
+      }
+
+      discovery.relabel "task_tracker_pods" {
+      	targets = discovery.kubernetes.task_tracker_pods.targets
+
+      	rule {
+      		source_labels = ["__meta_kubernetes_namespace"]
+      		target_label  = "namespace"
+      	}
+      	rule {
+      		source_labels = ["__meta_kubernetes_pod_name"]
+      		target_label  = "pod"
+      	}
+      	rule {
+      		source_labels = ["__meta_kubernetes_pod_container_name"]
+      		target_label  = "container"
+      	}
+      	rule {
+      		source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+      		target_label  = "app"
+      	}
+      }
+
+      loki.source.kubernetes "task_tracker_pods" {
+      	targets    = discovery.relabel.task_tracker_pods.output
+      	forward_to = [loki.write.default.receiver]
+      }
+
+      loki.write "default" {
+      	endpoint {
+      		url = "http://loki.loki.svc.cluster.local:3100/loki/api/v1/push"
+      	}
+      }
+  resources:
+    # Petit DaemonSet (x4 nodes) : le multiplicateur compte plus que la
+    # taille individuelle — voir la leçon CPU de l'Étape 1.
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
