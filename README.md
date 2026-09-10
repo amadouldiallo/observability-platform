@@ -34,7 +34,7 @@ Mêmes symboles que les Projets 1 et 2 en tête de bloc de commentaire :
 | 1 — Métriques (Prometheus) | `k8s/monitoring/` | ✅ **déployé et testé sur le vrai cluster** — voir §Métriques |
 | 2 — Logs (Loki) | `k8s/loki/` | ✅ **déployé et testé sur le vrai cluster** — voir §Logs |
 | 3 — Traces (OpenTelemetry + Tempo) | `k8s/tracing/` | ✅ **déployé et testé sur le vrai cluster** — voir §Traces |
-| 4 — Golden Signals | `k8s/dashboards/` | ⬜ à faire |
+| 4 — Golden Signals | `k8s/dashboards/` | ✅ **déployé et testé sur le vrai cluster** — voir §Golden Signals |
 | 5 — SLI | `docs/slo.md` | ⬜ à faire |
 | 6 — SLO | `docs/slo.md` | ⬜ à faire |
 | 7 — Alerting | `k8s/alerting/` | ⬜ à faire |
@@ -313,9 +313,53 @@ kubectl apply -f k8s/tracing/grafana-datasource.yaml
 kubectl rollout restart deployment/grafana -n grafana
 ```
 
+## Golden Signals
+
+`k8s/dashboards/golden-signals-backend.yaml` — un dashboard Grafana à 4
+panels (Latency, Traffic, Errors, Saturation), provisionné par ConfigMap
+comme le dashboard FinOps du Projet 2.
+
+```mermaid
+flowchart LR
+    PROM["Prometheus<br/>(Étape 1)"] --> LAT["Latency<br/>p50/p95/p99"]
+    PROM --> TRAF["Traffic<br/>req/s par handler"]
+    PROM --> ERR["Errors<br/>% de 5xx"]
+    PROM --> SAT["Saturation<br/>CPU/mémoire vs limits"]
+
+    style PROM fill:#E6522C,color:#fff
+```
+
+❓ **Pourquoi exclure `/metrics`, `/healthz`, `/readyz` de Latency et
+Traffic** : ce sont des endpoints sondés en continu (kube-probe toutes les
+5-10s, Prometheus lui-même toutes les 30s) — les inclure noierait le
+signal utile (le trafic RÉEL des utilisateurs) sous du bruit de sonde,
+exactement le même réflexe déjà appliqué à l'instrumentation elle-même
+(voir `excluded_handlers` dans `apps/backend/app/main.py`, dépôt
+gitops-platform).
+
+**Vérifié réellement, pas juste déployé :** chacune des 4 requêtes PromQL
+a été exécutée directement contre Prometheus AVANT d'être collée dans le
+JSON du dashboard (pas après, pour éviter de découvrir une erreur de
+syntaxe une fois dans l'UI) :
+
+| Panel | Résultat observé (trafic réel généré) |
+|---|---|
+| Latency p95 | `0.095` s |
+| Traffic | `0.028` req/s |
+| Errors | `0` (aucune erreur 5xx survenue — la première viendra de l'Étape 8) |
+| Saturation CPU | `0.7 %` de la limite |
+| Saturation mémoire | `19.9 %` de la limite |
+
+Le dashboard s'est ensuite chargé et confirmé accessible via l'API Grafana
+(`GET /api/dashboards/uid/golden-signals-backend` → 4 panels).
+
+```bash
+kubectl apply -f k8s/dashboards/golden-signals-backend.yaml
+```
+
 ---
 
-*Les sections suivantes (§Golden Signals, §SLI/SLO, §Alerting, §Simulation
-d'incident, §Runbooks) seront ajoutées au fil de l'avancement réel, chacune
-testée sur le cluster avant d'être documentée — même discipline que les
-Projets 1 et 2.*
+*Les sections suivantes (§SLI/SLO, §Alerting, §Simulation d'incident,
+§Runbooks) seront ajoutées au fil de l'avancement réel, chacune testée sur
+le cluster avant d'être documentée — même discipline que les Projets 1 et
+2.*

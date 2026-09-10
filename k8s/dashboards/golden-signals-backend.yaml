@@ -1,0 +1,133 @@
+# =============================================================================
+# Dashboard Grafana — Golden Signals du backend, provisionné par ConfigMap
+# =============================================================================
+#
+# 🎯 Le concept
+# 4 panels, calqués sur les 4 Golden Signals (Google SRE Book) : Latency,
+# Traffic, Errors, Saturation — le point d'entrée pour juger de la santé
+# du backend en un coup d'œil, avant de creuser plus loin (logs, traces).
+#
+# ❓ Pourquoi un ConfigMap plutôt que créé à la main dans l'UI
+# Même raison que k8s/finops/grafana-dashboard.yaml (Projet 2) :
+# `persistence.enabled=false` sur ce Grafana de lab — un dashboard cliqué
+# dans l'UI serait perdu au moindre redémarrage de pod. Le sidecar de
+# dashboards recharge ce ConfigMap à chaque démarrage.
+#
+# ⚠️ Les 4 requêtes PromQL ci-dessous ont chacune été vérifiées à la main
+# contre le vrai Prometheus (voir README §Golden Signals) avant d'être
+# collées ici — y compris Errors, qui renvoie 0%/aucune donnée tant
+# qu'aucune vraie erreur 5xx ne s'est produite (la première viendra de la
+# simulation d'incident de l'Étape 8, pas provoquée artificiellement ici).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-golden-signals
+  namespace: grafana
+  labels:
+    grafana_dashboard: "1"
+data:
+  golden-signals-backend.json: |
+    {
+      "title": "Golden Signals — task-tracker backend",
+      "uid": "golden-signals-backend",
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "time": { "from": "now-1h", "to": "now" },
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Latency — durée des requêtes (p50 / p95 / p99)",
+          "description": "Handlers /metrics, /healthz, /readyz exclus — trafic de sonde, pas trafic utilisateur.",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{namespace=\"task-tracker\",handler!~\"/metrics|/healthz|/readyz\"}[5m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace=\"task-tracker\",handler!~\"/metrics|/healthz|/readyz\"}[5m])) by (le))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace=\"task-tracker\",handler!~\"/metrics|/healthz|/readyz\"}[5m])) by (le))",
+              "legendFormat": "p99"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Traffic — requêtes par seconde",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum by (handler) (rate(http_requests_total{namespace=\"task-tracker\",handler!~\"/metrics|/healthz|/readyz\"}[5m]))",
+              "legendFormat": "{{handler}}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Errors — taux d'erreur 5xx",
+          "description": "0% tant qu'aucune vraie erreur 5xx ne s'est produite — voir la simulation d'incident, Étape 8.",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "100 * sum(rate(http_requests_total{namespace=\"task-tracker\",status=\"5xx\"}[5m])) / sum(rate(http_requests_total{namespace=\"task-tracker\"}[5m]))",
+              "legendFormat": "% erreurs 5xx"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Saturation — CPU / mémoire vs limits",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "100 * sum(rate(container_cpu_usage_seconds_total{namespace=\"task-tracker\",container=\"backend\"}[5m])) / sum(kube_pod_container_resource_limits{namespace=\"task-tracker\",container=\"backend\",resource=\"cpu\"})",
+              "legendFormat": "CPU % de la limite"
+            },
+            {
+              "expr": "100 * sum(container_memory_working_set_bytes{namespace=\"task-tracker\",container=\"backend\"}) / sum(kube_pod_container_resource_limits{namespace=\"task-tracker\",container=\"backend\",resource=\"memory\"})",
+              "legendFormat": "Mémoire % de la limite"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 70 },
+                  { "color": "red", "value": 90 }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
