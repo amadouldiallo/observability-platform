@@ -38,7 +38,7 @@ Mêmes symboles que les Projets 1 et 2 en tête de bloc de commentaire :
 | 5 — SLI | `docs/slo.md` | ✅ **3 SLI définis et vérifiés contre de vraies données** — voir §SLI |
 | 6 — SLO | `docs/slo.md` | ✅ **objectifs + error budget définis, vérifiés sur GKE** — voir §SLO |
 | 7 — Alerting | `k8s/alerting/` | ✅ **déployé et testé sur le vrai cluster** — voir §Alerting |
-| 8 — Simulation d'incident | `docs/incident-drill.md` | ⬜ à faire |
+| 8 — Simulation d'incident | `docs/incident-drill.md` | ✅ **panne réelle provoquée et documentée sur GKE** — voir §Simulation d'incident |
 | 9 — Runbooks | `docs/runbooks/` | ⬜ à faire |
 
 ## Infrastructure (Terraform)
@@ -429,8 +429,52 @@ de la simulation d'incident, Étape 8.
 kubectl apply -f k8s/alerting/prometheusrules.yaml
 ```
 
+## Simulation d'incident
+
+[docs/incident-drill.md](docs/incident-drill.md) — panne réellement
+provoquée (`kubectl scale deployment task-tracker-backend --replicas=0`),
+pas simulée sur le papier.
+
+```mermaid
+sequenceDiagram
+    participant Op as Opérateur
+    participant Argo as Argo CD
+    participant K8s as Kubernetes
+    participant Prom as Prometheus
+
+    Op->>K8s: scale --replicas=0
+    Argo->>K8s: selfHeal détecte la dérive
+    Argo->>K8s: scale --replicas=1 (annulé en ~3s)
+    Note over Op,Argo: 1ère tentative annulée — leçon retenue
+
+    Op->>Argo: désactive syncPolicy.automated
+    Op->>K8s: scale --replicas=0 (2e tentative)
+    K8s-->>Prom: cible disparaît (pas up=0, absence totale)
+    Note over Prom: 4 alertes existantes restent inactive
+    Op->>Prom: ajoute BackendDown (absent())
+    Prom->>Prom: pending (T+2m49s) puis firing (T+4m56s)
+    Op->>K8s: scale --replicas=1 + réactive selfHeal
+    K8s-->>Prom: cible réapparaît, alerte se résout
+```
+
+⚠️ **Découverte n°1 (pas prévue par le guide)** : le premier essai a été
+annulé par Argo CD en ~3 secondes — `selfHeal` corrige un `kubectl scale`
+manuel comme n'importe quelle dérive. Sur un cluster GitOps, simuler une
+panne exige d'abord de neutraliser la réconciliation automatique.
+
+⚠️ **Découverte n°2 (le vrai trou de couverture)** : aucune des 4 alertes
+de l'Étape 7 ne s'est déclenchée pendant la panne réelle — elles dépendent
+toutes de métriques que l'application ÉMET elle-même, or une application
+totalement arrêtée n'émet plus rien. Root-cause complet, et l'alerte
+manquante (`BackendDown`, basée sur `absent()` — `up == 0` n'aurait pas
+suffi non plus, la cible disparaît plutôt que de passer à 0) ajoutée et
+**vérifiée en direct, panne toujours active** : détail complet dans
+[docs/incident-drill.md](docs/incident-drill.md).
+
+**MTTD observé** : ~4min56s (dominé par le `for: 2m` délibéré). **MTTR
+observé** : 24s (`scale` → pod `Ready`).
+
 ---
 
-*Les sections suivantes (§Simulation d'incident, §Runbooks) seront
-ajoutées au fil de l'avancement réel, chacune testée sur le cluster avant
-d'être documentée — même discipline que les Projets 1 et 2.*
+*La section §Runbooks sera ajoutée à l'Étape 9, testée sur le cluster
+avant d'être documentée — même discipline que les Projets 1 et 2.*

@@ -96,3 +96,27 @@ spec:
           annotations:
             summary: "Plus de 80% de l'error budget (SLO 99,9% de disponibilité) consommé sur la dernière heure"
             runbook_url: "https://github.com/amadouldiallo/observability-platform/blob/main/docs/runbooks/slo-breach.md"
+
+        # ⚠️ Ajoutée APRÈS la simulation d'incident (Étape 8), pas avant —
+        # un vrai trou de couverture découvert en la provoquant, pas deviné
+        # en lisant du YAML. `kubectl scale --replicas=0` sur le backend :
+        # aucune des 4 règles ci-dessus ne s'est déclenchée. Cause : une
+        # fois le dernier pod parti, Kubernetes retire l'Endpoint du
+        # Service, et le Service Discovery de Prometheus retire la cible
+        # elle-même — `up{job="task-tracker-backend"}` ne passe PAS à `0`,
+        # la série disparaît purement et simplement (vérifié :
+        # `curl .../api/v1/query?query=up{job="task-tracker-backend"}` ->
+        # `[]`, pas `[{"value":[...,"0"]}]`). HighErrorRate/HighLatency/
+        # SLOViolation dépendent tous des métriques ÉMISES PAR
+        # L'APPLICATION elle-même — une application totalement arrêtée ne
+        # peut, par définition, plus rien émettre sur son propre état.
+        # `absent()` est la seule façon de détecter "la cible a disparu",
+        # par opposition à "la cible répond mal".
+        - alert: BackendDown
+          expr: absent(up{job="task-tracker-backend"})
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Plus aucune cible task-tracker-backend dans Prometheus — le backend est probablement totalement arrêté"
+            runbook_url: "https://github.com/amadouldiallo/observability-platform/blob/main/docs/runbooks/backend-down.md"
