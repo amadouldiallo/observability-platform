@@ -36,7 +36,7 @@ Mêmes symboles que les Projets 1 et 2 en tête de bloc de commentaire :
 | 3 — Traces (OpenTelemetry + Tempo) | `k8s/tracing/` | ✅ **déployé et testé sur le vrai cluster** — voir §Traces |
 | 4 — Golden Signals | `k8s/dashboards/` | ✅ **déployé et testé sur le vrai cluster** — voir §Golden Signals |
 | 5 — SLI | `docs/slo.md` | ✅ **3 SLI définis et vérifiés contre de vraies données** — voir §SLI |
-| 6 — SLO | `docs/slo.md` | ⬜ à faire |
+| 6 — SLO | `docs/slo.md` | ✅ **objectifs + error budget définis, vérifiés sur GKE** — voir §SLO |
 | 7 — Alerting | `k8s/alerting/` | ⬜ à faire |
 | 8 — Simulation d'incident | `docs/incident-drill.md` | ⬜ à faire |
 | 9 — Runbooks | `docs/runbooks/` | ⬜ à faire |
@@ -372,9 +372,28 @@ bornes du backend (`apps/backend/app/main.py`, dépôt gitops-platform) pour
 inclure `0.3`. Détail complet et requêtes vérifiées dans
 [docs/slo.md](docs/slo.md).
 
+## SLO
+
+[docs/slo.md](docs/slo.md) (mis à jour) — objectifs : disponibilité ≥
+99,9%, taux d'erreur < 0,1%, latence p95 < 300ms, sur 30 jours glissants.
+Error budget calculé : **43,2 minutes d'indisponibilité tolérées par mois**.
+
+⚠️ **Piège rencontré pour de vrai** : les requêtes PromQL "manuel"
+(fenêtre `[30d]`) s'exécutent sans erreur et renvoient un résultat
+plausible — mais ce Prometheus a une rétention de **6h seulement**
+(décision délibérée de l'Étape 1, Prometheus n'étant pas la source de
+vérité long terme ici). Une fenêtre plus longue que la rétention réelle
+ne produit PAS d'erreur, elle calcule silencieusement sur les seules
+données disponibles tout en prétendant couvrir 30 jours — vérifié
+directement via `/api/v1/status/runtimeinfo`. Documenté avec deux
+versions des requêtes dans `docs/slo.md` : la version "manuel" (30j,
+correcte en principe, pas vérifiable sur ce lab) et la version réellement
+utilisée sur ce cluster (fenêtre 1h, adaptée à la rétention réelle) — un
+vrai SLO à 30 jours demanderait un stockage long terme (Thanos, Mimir),
+délibérément hors scope ici.
+
 ---
 
-*Les sections suivantes (§SLO, §Alerting, §Simulation d'incident,
-§Runbooks) seront ajoutées au fil de l'avancement réel, chacune testée sur
-le cluster avant d'être documentée — même discipline que les Projets 1 et
-2.*
+*Les sections suivantes (§Alerting, §Simulation d'incident, §Runbooks)
+seront ajoutées au fil de l'avancement réel, chacune testée sur le cluster
+avant d'être documentée — même discipline que les Projets 1 et 2.*
